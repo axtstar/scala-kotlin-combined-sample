@@ -8,11 +8,14 @@ import org.jetbrains.exposed.dao.IntEntityClass
 import org.jetbrains.exposed.dao.id.EntityID
 import org.jetbrains.exposed.dao.id.IdTable
 import org.jetbrains.exposed.sql.*
+import org.jetbrains.exposed.sql.transactions.TransactionManager
 import org.jetbrains.exposed.sql.transactions.transaction
+import java.sql.ResultSet
 
 fun main(args: Array<String>) {
     DBConnect.init()
     DynamicTables.getTest()
+    DynamicTables.getRawSql()
 }
 
 object DBConnect{
@@ -25,6 +28,9 @@ object DBConnect{
     }
 }
 
+/**
+ * DAO object
+ */
 object DynamicTables : IdTable<Int>() {
     override val tableName: String
         get() = internalTableName
@@ -37,6 +43,16 @@ object DynamicTables : IdTable<Int>() {
 
     var internalTableName = "city"
 
+    fun <T:Any> String.execAndMap(transform : (ResultSet) -> T) : List<T> {
+        val result = arrayListOf<T>()
+        TransactionManager.current().exec(this) { rs ->
+            while (rs.next()) {
+                result += transform(rs)
+            }
+        }
+        return result
+    }
+
     fun getTest() {
         transaction {
             // print sql to std-out
@@ -45,7 +61,8 @@ object DynamicTables : IdTable<Int>() {
             val result = DynamicTable.all()
             println("master: ${result.count()}")
             for ( x in result) {
-                println("id: ${x.id} city: ${x.city} country_id: ${x.country_id}")
+                val xx = x.toModel()
+                println("id: ${xx.city_id} city: ${xx.city} country_id: ${xx.country_id}")
             }
         }
     }
@@ -55,7 +72,14 @@ object DynamicTables : IdTable<Int>() {
             // print sql to std-out
             addLogger(StdOutSqlLogger)
 
-            val result = DynamicTable.all()
+            val result = "SELECT city.city, city.country_id, city.city_id FROM city".execAndMap<Dynamic> { rs ->
+                val id = rs.getInt("city_id")
+                Dynamic(
+                        id,
+                        rs.getString("city"),
+                        rs.getInt("country_id"))
+            }
+
             println("master: ${result.count()}")
             for ( x in result) {
                 println("id: ${x.city_id} city: ${x.city} country_id: ${x.country_id}")
@@ -65,11 +89,33 @@ object DynamicTables : IdTable<Int>() {
     }
 }
 
+/**
+ * DTO object
+ */
+data class Dynamic(val city_id: Int, val city: String, val country_id: Int)
+
+/**
+ * DAO Entity class
+ */
 class DynamicTable(id: EntityID<Int>): IntEntity(id) {
     companion object : IntEntityClass<DynamicTable>(DynamicTables)
 
-    var city_id by DynamicTables.city_id
+    var city_id by DynamicTables.id // DynamicTables.city_id is not working
     var city by DynamicTables.city
     var country_id by DynamicTables.country_id
 
+    // DAO entity not serializable?
+    // see https://github.com/JetBrains/Exposed/issues/497
+    // solution
+    // https://gist.github.com/felix19350/bcb39e50820dcc6872f624d2e925dd9a
+    // Ktorm is another solution (because they are serializable)
+    //https://github.com/vincentlauvlwj/Ktorm
+    fun toModel(): Dynamic {
+        val target = Dynamic(
+                city_id = city_id.value,
+                city = city,
+                country_id = country_id
+        )
+        return target
+    }
 }
